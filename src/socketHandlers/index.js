@@ -22,6 +22,7 @@ const {
   validateCallbackUrl
 } = require('../webhookCallback');
 const {
+  clearChannelRuntimeState,
   createTempChannelDeleteCallback,
   generateUniqueChannelCode,
   persistChannelCodeRotation,
@@ -95,7 +96,9 @@ function setupSocketHandlers(io, db, opts = {}) {
   const activeMusic         = new Map(); // code → { url, userId, username, playbackState, ... }
   const musicQueues         = new Map(); // code → [{ id, url, title, userId, username, resolvedFrom }]
   const activeScreenSharers = new Map(); // code → Set<userId>
+  const activeScreenSessions = new Map(); // code → Map<userId, { transport, sessionId }>
   const activeWebcamUsers   = new Map(); // code → Set<userId>
+  const nativeScreenOfferWindows = new Map(); // `${sharerId}:${viewerId}` → timestamps
   const userFloodBuckets    = new Map(); // `${userId}:${bucket}` → number[] (send timestamps)
   // Presence timing for the "idle but online" flag. onlineSince is set when a
   // user goes from having zero live sockets to one; lastActiveAt advances only
@@ -146,7 +149,8 @@ function setupSocketHandlers(io, db, opts = {}) {
   const state = {
     channelUsers, voiceUsers, voiceLastActivity,
     activeMusic, musicQueues,
-    activeScreenSharers, activeWebcamUsers, streamViewers,
+    activeScreenSharers, activeScreenSessions, activeWebcamUsers,
+    nativeScreenOfferWindows, streamViewers,
     slowModeTracker, pendingTempDelete, pendingVoiceLeave
   };
 
@@ -672,6 +676,22 @@ function setupSocketHandlers(io, db, opts = {}) {
       const sock = io.sockets.sockets.get(entry.socketId);
       if (!sock || !sock.connected) {
         room.delete(userId);
+        const sharers = activeScreenSharers.get(code);
+        if (sharers) {
+          sharers.delete(userId);
+          if (sharers.size === 0) activeScreenSharers.delete(code);
+        }
+        const sessions = activeScreenSessions.get(code);
+        if (sessions) {
+          sessions.delete(userId);
+          if (sessions.size === 0) activeScreenSessions.delete(code);
+        }
+        streamViewers.delete(`${code}:${userId}`);
+        for (const [key, viewers] of streamViewers) {
+          if (!key.startsWith(`${code}:`)) continue;
+          viewers.delete(userId);
+          if (viewers.size === 0) streamViewers.delete(key);
+        }
         removed.push({ id: userId, username: entry.username });
         console.log(`[Voice] Pruned stale voice entry for user ${userId} (socket ${entry.socketId} gone)`);
       }
@@ -929,6 +949,11 @@ function setupSocketHandlers(io, db, opts = {}) {
 
     const sharers = activeScreenSharers.get(code);
     if (sharers) { sharers.delete(socket.user.id); if (sharers.size === 0) activeScreenSharers.delete(code); }
+    const screenSessions = activeScreenSessions.get(code);
+    if (screenSessions) {
+      screenSessions.delete(socket.user.id);
+      if (screenSessions.size === 0) activeScreenSessions.delete(code);
+    }
 
     const camUsers = activeWebcamUsers.get(code);
     if (camUsers) { camUsers.delete(socket.user.id); if (camUsers.size === 0) activeWebcamUsers.delete(code); }
@@ -1410,11 +1435,8 @@ function setupSocketHandlers(io, db, opts = {}) {
             pendingTempDelete.delete(ch.code);
           }
           io.to(`channel:${ch.code}`).to(`voice:${ch.code}`).emit('channel-deleted', { code: ch.code, reason: 'expired' });
-          channelUsers.delete(ch.code);
-          voiceUsers.delete(ch.code);
-          activeMusic.delete(ch.code);
+          clearChannelRuntimeState(state, ch.code);
           syncMusicActivity(ch.code);
-          musicQueues.delete(ch.code);
           console.log(`[Temporary] Channel "${ch.code}" expired and was deleted`);
         }
       }
@@ -1817,6 +1839,8 @@ function setupSocketHandlers(io, db, opts = {}) {
       // 429s, so this is the cap that protects the bot, not the database. The
       // composer debounces at 250ms, so typing cannot reach it.
       ferrySearch: { max: 8, windowMs: 10000 },
+      nativeSignal: { max: 300, windowMs: 10000 },
+      screenLifecycle: { max: 12, windowMs: 10000 },
     };
 
     function floodCheck(bucket) {
@@ -1835,8 +1859,6 @@ function setupSocketHandlers(io, db, opts = {}) {
 
     const FLOOD_EXEMPT = new Set([
       'voice-offer', 'voice-answer', 'voice-ice-candidate',
-      'screen-share-started', 'screen-share-stopped',
-      'request-screen-renegotiate',
       'voice-speaking', 'webcam-started', 'webcam-stopped',
       'stream-viewer-joined', 'stream-viewer-left',
       'visibility-change'
@@ -1857,6 +1879,15 @@ function setupSocketHandlers(io, db, opts = {}) {
     socket.use((packet, next) => {
       const eventName = packet[0];
       if (PRESENCE_ACTIVE_EVENTS.has(eventName)) touchPresenceActivity(socket.user.id);
+      if (eventName === 'screen-share-started' || eventName === 'screen-share-stopped' ||
+          eventName === 'request-screen-renegotiate') {
+        if (floodCheck('screenLifecycle')) return;
+        return next();
+      }
+      if (typeof eventName === 'string' && eventName.startsWith('native-screen-')) {
+        if (floodCheck('nativeSignal')) return;
+        return next();
+      }
       if (FLOOD_EXEMPT.has(eventName)) return next();
       if (floodCheck('event')) {
         socket.emit('error-msg', 'Slow down — too many requests');

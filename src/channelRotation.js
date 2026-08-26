@@ -73,8 +73,31 @@ function schedulePendingVoiceLeave({
   return pending;
 }
 
+function clearChannelRuntimeState(state, code) {
+  for (const name of [
+    'channelUsers', 'voiceUsers', 'activeMusic', 'musicQueues',
+    'activeScreenSharers', 'activeScreenSessions', 'activeWebcamUsers',
+  ]) {
+    state[name]?.delete(code);
+  }
+  for (const key of state.streamViewers?.keys() || []) {
+    if (key.startsWith(`${code}:`)) state.streamViewers.delete(key);
+  }
+  const tempTimer = state.pendingTempDelete?.get(code);
+  if (tempTimer) clearTimeout(tempTimer);
+  state.pendingTempDelete?.delete(code);
+  for (const [key, pending] of state.pendingVoiceLeave || []) {
+    if (!key.endsWith(`:${code}`)) continue;
+    if (pending?.timer) clearTimeout(pending.timer);
+    state.pendingVoiceLeave.delete(key);
+  }
+  for (const key of state.nativeScreenOfferWindows?.keys() || []) {
+    if (key.endsWith(`:${code}`)) state.nativeScreenOfferWindows.delete(key);
+  }
+}
+
 function createTempChannelDeleteCallback({ db, io, state, channelId, log = console.log, warn = console.warn }) {
-  const { channelUsers, voiceUsers, pendingTempDelete } = state;
+  const { voiceUsers, pendingTempDelete } = state;
   return () => {
     let code = null;
     try {
@@ -97,9 +120,7 @@ function createTempChannelDeleteCallback({ db, io, state, channelId, log = conso
         db.prepare('DELETE FROM channel_members WHERE channel_id = ?').run(channel.id);
         db.prepare('DELETE FROM channels WHERE id = ?').run(channel.id);
       })();
-      channelUsers.delete(code);
-      voiceUsers.delete(code);
-      pendingTempDelete.delete(code);
+      clearChannelRuntimeState(state, code);
       const audience = typeof io.except === 'function' ? io.except('bot-sockets') : io;
       audience.emit('channel-deleted', { code, reason: 'temp-empty' });
       log(`[Temporary] Temp voice channel "${code}" deleted (everyone left)`);
@@ -163,6 +184,7 @@ function rotateLiveChannelState(io, state, channelId, oldCode, newCode) {
     state.activeMusic,
     state.musicQueues,
     state.activeScreenSharers,
+    state.activeScreenSessions,
     state.activeWebcamUsers
   ]) migrateMapKey(map, oldCode, newCode);
 
@@ -185,11 +207,20 @@ function rotateLiveChannelState(io, state, channelId, oldCode, newCode) {
     state.pendingTempDelete.delete(oldCode);
     state.pendingTempDelete.set(newCode, timer);
   }
+  for (const [key, timestamps] of state.nativeScreenOfferWindows || []) {
+    if (!key.endsWith(`:${oldCode}`)) continue;
+    state.nativeScreenOfferWindows.delete(key);
+    state.nativeScreenOfferWindows.set(
+      `${key.slice(0, -(oldCode.length))}${newCode}`,
+      timestamps
+    );
+  }
 
   io.to(newRoom).to(newVoiceRoom).emit('channel-code-rotated', rotation);
 }
 
 module.exports = {
+  clearChannelRuntimeState,
   createTempChannelDeleteCallback,
   generateUniqueChannelCode,
   persistChannelCodeRotation,
