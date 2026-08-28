@@ -5,7 +5,13 @@ const assert = require('node:assert/strict');
 const { registerNativeScreenSignaling } = require('../src/socketHandlers/nativeScreen');
 const registerVoiceHandlers = require('../src/socketHandlers/voice');
 
-function createHarness({ senderId = 1, sharerId = 1, offerWindows = new Map() } = {}) {
+function createHarness({
+  senderId = 1,
+  sharerId = 1,
+  senderVersion = 1,
+  targetVersion = 1,
+  offerWindows = new Map(),
+} = {}) {
   const handlers = new Map();
   const emitted = [];
   const socket = {
@@ -14,8 +20,8 @@ function createHarness({ senderId = 1, sharerId = 1, offerWindows = new Map() } 
     on(event, handler) { handlers.set(event, handler); },
   };
   const room = new Map([
-    [1, { id: 1, socketId: 'socket-1' }],
-    [2, { id: 2, socketId: 'socket-2' }],
+    [1, { id: 1, socketId: 'socket-1', nativeScreenVersion: senderId === 1 ? senderVersion : targetVersion }],
+    [2, { id: 2, socketId: 'socket-2', nativeScreenVersion: senderId === 2 ? senderVersion : targetVersion }],
   ]);
   const io = {
     to(socketId) {
@@ -66,6 +72,15 @@ test('relays native screen offers only from the active sharer', () => {
     offer: { type: 'offer', sdp: 'v=0' },
   });
   assert.equal(rejected.emitted.length, 0);
+});
+
+test('does not relay native screen signaling to an older client', () => {
+  const harness = createHarness({ targetVersion: 0 });
+  harness.handlers.get('native-screen-offer')({
+    ...base,
+    offer: { type: 'offer', sdp: 'v=0' },
+  });
+  assert.equal(harness.emitted.length, 0);
 });
 
 test('rate limits repeated native offers to the same viewer', () => {
@@ -136,12 +151,18 @@ test('relays ICE in either direction and rejects stale session identifiers', () 
   assert.equal(stale.emitted.length, 0);
 });
 
-function createLifecycleHarness({ socketId = 'socket-1', ownerSocketId = 'socket-1' } = {}) {
+function createLifecycleHarness({
+  socketId = 'socket-1',
+  ownerSocketId = 'socket-1',
+  nativeScreenVersion = 1,
+  viewerNativeScreenVersion = 1,
+} = {}) {
   const handlers = new Map();
   const emitted = [];
   const socket = {
     id: socketId,
     user: { id: 1, username: 'User 1', displayName: 'User 1', isAdmin: false },
+    handshake: { auth: { nativeScreenVersion } },
     on(event, handler) { handlers.set(event, handler); },
     emit(event, payload) { emitted.push({ socketId, event, payload }); },
     join() {},
@@ -150,8 +171,8 @@ function createLifecycleHarness({ socketId = 'socket-1', ownerSocketId = 'socket
   const state = {
     channelUsers: new Map(),
     voiceUsers: new Map([['a1b2c3d4', new Map([
-      [1, { id: 1, username: 'User 1', socketId: ownerSocketId }],
-      [2, { id: 2, username: 'User 2', socketId: 'socket-2' }],
+      [1, { id: 1, username: 'User 1', socketId: ownerSocketId, nativeScreenVersion }],
+      [2, { id: 2, username: 'User 2', socketId: 'socket-2', nativeScreenVersion: viewerNativeScreenVersion }],
     ])]]),
     voiceLastActivity: new Map(),
     activeMusic: new Map(),
@@ -218,6 +239,8 @@ test('screen lifecycle requires the socket that owns the voice entry', () => {
 
 test('a stale native stop cannot remove a newer screen session', () => {
   const { handlers, state } = createLifecycleHarness();
+  let staleResponse;
+  let stopResponse;
   handlers.get('screen-share-started')({
     code: 'a1b2c3d4',
     transport: 'native',
@@ -226,7 +249,8 @@ test('a stale native stop cannot remove a newer screen session', () => {
   handlers.get('screen-share-stopped')({
     code: 'a1b2c3d4',
     sessionId: 'native-session-old1',
-  });
+  }, result => { staleResponse = result; });
+  assert.deepEqual(staleResponse, { ok: false, error: 'stale-session' });
   assert.equal(
     state.activeScreenSessions.get('a1b2c3d4').get(1).sessionId,
     'native-session-1234'
@@ -234,8 +258,48 @@ test('a stale native stop cannot remove a newer screen session', () => {
   handlers.get('screen-share-stopped')({
     code: 'a1b2c3d4',
     sessionId: 'native-session-1234',
-  });
+  }, result => { stopResponse = result; });
+  assert.deepEqual(stopResponse, { ok: true });
   assert.equal(state.activeScreenSessions.size, 0);
+});
+
+test('screen stop acknowledgment is idempotent after cleanup', () => {
+  const { handlers } = createLifecycleHarness();
+  let response;
+  handlers.get('screen-share-stopped')({ code: 'a1b2c3d4' }, result => { response = result; });
+  assert.deepEqual(response, { ok: true });
+});
+
+test('server rejects native screen start when a viewer is on an older client', () => {
+  const { handlers, state } = createLifecycleHarness({ viewerNativeScreenVersion: 0 });
+  let response;
+  handlers.get('screen-share-started')({
+    code: 'a1b2c3d4',
+    transport: 'native',
+    sessionId: 'native-session-1234',
+  }, result => { response = result; });
+
+  assert.deepEqual(response, { ok: false, error: 'unsupported-viewer' });
+  assert.equal(state.activeScreenSessions.size, 0);
+});
+
+test('an older late joiner stops active native sessions for the whole room', () => {
+  const harness = createLifecycleHarness({ nativeScreenVersion: 0 });
+  harness.state.activeScreenSharers.set('a1b2c3d4', new Set([2]));
+  harness.state.activeScreenSessions.set('a1b2c3d4', new Map([[
+    2,
+    { transport: 'native', sessionId: 'native-session-1234' },
+  ]]));
+
+  harness.handlers.get('voice-join')({ code: 'a1b2c3d4' });
+
+  assert.equal(harness.state.activeScreenSessions.size, 0);
+  assert.ok(harness.emitted.some(item =>
+    item.socketId === 'socket-2' && item.event === 'native-screen-incompatible-viewer'
+  ));
+  assert.ok(harness.emitted.some(item =>
+    item.socketId === 'socket-1' && item.event === 'screen-share-stopped'
+  ));
 });
 
 test('a stale native stop cannot remove a newer browser screen session', () => {

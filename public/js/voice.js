@@ -19,6 +19,8 @@ const _IS_IOS_WEBKIT = (() => {
   } catch { return false; }
 })();
 
+const _NATIVE_SCREEN_VERSION = 1;
+
 class VoiceManager {
   constructor(socket) {
     this.socket = socket;
@@ -57,6 +59,9 @@ class VoiceManager {
     this._nativeScreenSenderStates = new Map(); // peer/session → answer + queued ICE state
     this._nativeScreenSharing = false;
     this._nativeScreenSessionId = null;
+    this._nativeScreenServerVersion = 0;
+    this._nativeScreenPeerVersions = new Map();
+    this._screenShareChannelCode = null;
     this._screenStartOperation = 0;
     this._screenStartInFlight = false;
     this._screenWatchdogTimers = new Map();
@@ -66,6 +71,7 @@ class VoiceManager {
     this.onScreenShareStarted = null; // callback(userId, username) — someone started streaming
     this.onWebcamStatusChange = null; // callback() — webcam started/stopped, re-render user list
     this.onConnectivityWarning = null; // (#5399) callback(message) — fired when no STUN server responds
+    this.onScreenShareWarning = null;
     this._connectivityWarned = false;  // only warn once per session to avoid toast spam
     this.deafenedUsers = new Set();   // userIds we've muted our audio towards
     this._localTalkInterval = null;
@@ -436,6 +442,10 @@ class VoiceManager {
       if (!channelCode || !stillCurrent()) return;
       // Apply audio bitrate cap from channel settings
       this.audioBitrate = data.voiceBitrate || 0;
+      this._nativeScreenServerVersion = data.nativeScreenVersion || 0;
+      this._nativeScreenPeerVersions = new Map((data.users || [])
+        .filter(Boolean)
+        .map(user => [user.id, user.isBot ? null : (user.nativeScreenVersion || 0)]));
       if (data.rejoin && !data.skipRenegotiate) {
         await this._reannounceScreenShare(data.users || [], { channelCode, voiceGeneration });
         if (!stillCurrent()) return;
@@ -482,8 +492,12 @@ class VoiceManager {
     this.socket.on('voice-user-joined', (data) => {
       // The new user handles creating offers to existing users,
       // so we just wait for their offer via 'voice-offer'.
-      if (this.onVoiceJoin && data && data.user) {
-        this.onVoiceJoin(data.user.id, data.user.username);
+      if (data?.user) {
+        this._nativeScreenPeerVersions.set(
+          data.user.id,
+          data.user.isBot ? null : (data.user.nativeScreenVersion || 0)
+        );
+        if (this.onVoiceJoin) this.onVoiceJoin(data.user.id, data.user.username);
       }
     });
 
@@ -704,6 +718,7 @@ class VoiceManager {
       this._removePeer(data.user.id);
       this._closeNativeScreenPeer(data.user.id);
       this._nativeScreenAnnouncements.delete(data.user.id);
+      this._nativeScreenPeerVersions.delete(data.user.id);
       if (this._nativeScreenSharing) {
         for (const key of this._nativeScreenSenderStates.keys()) {
           if (key.startsWith(`${data.user.id}:`)) this._nativeScreenSenderStates.delete(key);
@@ -822,6 +837,16 @@ class VoiceManager {
       this._handleNativeScreenIceCandidate(data).catch(err => {
         console.warn('[NativeScreen] Failed to apply ICE candidate:', err);
       });
+    });
+
+    this.socket.on('native-screen-incompatible-viewer', data => {
+      if (!this._nativeScreenSharing || data?.channelCode !== this.currentChannel ||
+          data.sessionId !== this._nativeScreenSessionId) return;
+      if (data.viewerId != null) this._nativeScreenPeerVersions.set(data.viewerId, 0);
+      if (this.onScreenShareWarning) {
+        this.onScreenShareWarning('Native screen sharing stopped because a viewer is using an older client. Start sharing again to use compatibility mode.');
+      }
+      this._handleNativeScreenFailure('viewer does not support native screen sharing');
     });
 
     // Someone started their webcam
@@ -1180,9 +1205,21 @@ class VoiceManager {
     for (const key of this._nativeScreenSenderStates.keys()) {
       if (key.startsWith(`${peerId}:`)) this._nativeScreenSenderStates.delete(key);
     }
-    await api?.removePeer?.({ peerId, sessionId }).catch(() => {});
+    const removed = await this._runNativeOperation(
+      () => api?.removePeer?.({ peerId, sessionId })
+    );
+    if (!removed) {
+      if (!this._nativeScreenSharing || this._nativeScreenSessionId !== sessionId) return;
+      throw new Error('Native viewer removal timed out');
+    }
     if (!this._nativeScreenSharing || this._nativeScreenSessionId !== sessionId) return;
-    await api?.addPeer?.({ peerId, sessionId });
+    const added = await this._runNativeOperation(
+      () => api?.addPeer?.({ peerId, sessionId })
+    );
+    if (!added) {
+      if (!this._nativeScreenSharing || this._nativeScreenSessionId !== sessionId) return;
+      throw new Error('Native viewer attachment timed out');
+    }
   }
 
   async _reannounceScreenShare(users, context = {}) {
@@ -1194,27 +1231,44 @@ class VoiceManager {
       (this._voiceSessionGeneration || 0) === voiceGeneration;
     if (!channelCode || !isCurrent()) return;
     if (this._nativeScreenSharing && nativeSessionId) {
-      this.socket.emit('screen-share-started', {
+      const confirmation = await this._emitScreenLifecycle('screen-share-started', {
         code: channelCode,
         hasAudio: false,
         transport: 'native',
         sessionId: nativeSessionId,
       });
+      if (!confirmation.ok) {
+        if (this._nativeScreenSharing && this._nativeScreenSessionId === nativeSessionId) {
+          this._handleNativeScreenFailure('server rejected native screen reannouncement');
+        }
+        return;
+      }
       for (const user of users) {
         if (!isCurrent() || this._nativeScreenSessionId !== nativeSessionId) return;
-        if (user?.id != null) {
-          await this._replaceNativeScreenPeer(user.id, nativeSessionId);
+        if (user?.id != null && !user.isBot) {
+          try {
+            await this._replaceNativeScreenPeer(user.id, nativeSessionId);
+          } catch (err) {
+            console.warn('[NativeScreen] Failed to restore viewer after rejoin:', err);
+            if (this._nativeScreenSharing && this._nativeScreenSessionId === nativeSessionId) {
+              this._handleNativeScreenFailure(err.message);
+            }
+            return;
+          }
           if (!isCurrent() || this._nativeScreenSessionId !== nativeSessionId) return;
         }
       }
       return;
     }
     if (!screenStream || this._nativeScreenSharing) return;
-    this.socket.emit('screen-share-started', {
+    const confirmation = await this._emitScreenLifecycle('screen-share-started', {
       code: channelCode,
       hasAudio: screenStream.getAudioTracks().length > 0,
       transport: 'browser',
     });
+    if (!confirmation.ok && !this._nativeScreenSharing && this.screenStream === screenStream) {
+      await this.stopScreenShare();
+    }
   }
 
   _closeNativeScreenPeer(userId, preserveSessionId = null, preserveNegotiationId = null) {
@@ -1267,6 +1321,65 @@ class VoiceManager {
       (this._voiceSessionGeneration || 0) === voiceGeneration;
   }
 
+  _emitScreenLifecycle(event, payload, timeoutMs = 5000) {
+    if ((this._nativeScreenServerVersion || 0) < _NATIVE_SCREEN_VERSION) {
+      this.socket.emit(event, payload);
+      return Promise.resolve({ ok: true, legacy: true });
+    }
+    return new Promise(resolve => {
+      let settled = false;
+      const finish = response => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(response || { ok: false });
+      };
+      const timer = setTimeout(() => finish({ ok: false, error: 'timeout' }), timeoutMs);
+      this.socket.emit(event, payload, finish);
+    });
+  }
+
+  async _announceScreenStopped(channelCodes, sessionId = null, shouldRetry = null) {
+    const codes = [...new Set(channelCodes.filter(Boolean))];
+    if (codes.length === 0) return false;
+    const send = () => Promise.all(codes.map(code => this._emitScreenLifecycle(
+      'screen-share-stopped',
+      sessionId ? { code, sessionId } : { code },
+      this._screenLifecycleStopTimeoutMs || 1500
+    )));
+    let results = await send();
+    if (results.some(result => result.ok)) return true;
+    if (this.socket.connected === false) return false;
+    if (shouldRetry && !shouldRetry()) return false;
+    await new Promise(resolve => setTimeout(resolve, 250));
+    if (shouldRetry && !shouldRetry()) return false;
+    results = await send();
+    return results.some(result => result.ok);
+  }
+
+  async _runNativeOperation(operation, timeoutMs = 3000) {
+    let timer;
+    try {
+      return await Promise.race([
+        Promise.resolve().then(operation).then(() => true, () => false),
+        new Promise(resolve => {
+          timer = setTimeout(() => resolve(false), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  _canUseNativeScreen() {
+    if ((this._nativeScreenServerVersion || 0) < _NATIVE_SCREEN_VERSION) return false;
+    for (const peerId of this.peers.keys()) {
+      const peerVersion = this._nativeScreenPeerVersions.get(peerId);
+      if (peerVersion !== null && (peerVersion || 0) < _NATIVE_SCREEN_VERSION) return false;
+    }
+    return true;
+  }
+
   async _tryStartNativeScreenShare(
     operation = this._screenStartOperation,
     channelCode = this.currentChannel,
@@ -1278,10 +1391,12 @@ class VoiceManager {
       'setRemoteDescription', 'addIceCandidate', 'onSignal',
     ];
     if (!api || requiredMethods.some(method => typeof api[method] !== 'function')) return null;
+    if (!this._canUseNativeScreen()) return null;
 
     const capabilities = await api.getCapabilities().catch(() => null);
     if (!this._isScreenStartValid(operation, channelCode, voiceGeneration)) return false;
     if (!capabilities?.supported) return null;
+    if (!this._canUseNativeScreen()) return null;
 
     const res = this.screenResolution;
     let announced = false;
@@ -1296,46 +1411,61 @@ class VoiceManager {
       });
       if (!this._isScreenStartValid(operation, channelCode, voiceGeneration)) {
         if (result?.started) {
-          await api.stop({ sessionId: result.sessionId }).catch(() => {});
+          await this._runNativeOperation(() => api.stop({ sessionId: result.sessionId }));
         }
         return false;
       }
       if (!result?.started || !/^[A-Za-z0-9_-]{8,64}$/.test(String(result.sessionId || ''))) {
-        await api.stop().catch(() => {});
+        await this._runNativeOperation(() => api.stop());
         return result?.cancelled ? false : null;
+      }
+      if (!this._canUseNativeScreen()) {
+        await this._runNativeOperation(() => api.stop({ sessionId: result.sessionId }));
+        return false;
       }
 
       this._nativeScreenSharing = true;
       this._nativeScreenSessionId = result.sessionId;
+      this._screenShareChannelCode = channelCode;
       startedSessionId = result.sessionId;
       this.isScreenSharing = true;
       this.screenStream = null;
       this.screenHasAudio = false;
-      this.socket.emit('screen-share-started', {
+      const confirmation = await this._emitScreenLifecycle('screen-share-started', {
         code: channelCode,
         hasAudio: false,
         transport: 'native',
         sessionId: result.sessionId,
       });
       announced = true;
+      if (!confirmation.ok) {
+        if (confirmation.error === 'unsupported-viewer' && this.onScreenShareWarning) {
+          this.onScreenShareWarning('Native screen sharing is unavailable while an older client is in voice. Start sharing again to use compatibility mode.');
+        }
+        throw new Error(`Server rejected native screen share: ${confirmation.error || 'unknown error'}`);
+      }
 
-      const peerResults = await Promise.allSettled(Array.from(this.peers.keys()).map(peerId => api.addPeer({
-        peerId,
-        sessionId: result.sessionId,
-      })));
-      if (peerResults.some(result => result.status === 'rejected')) {
-        console.warn('[NativeScreen] One or more initial viewers could not be attached');
+      const nativePeerIds = Array.from(this.peers.keys())
+        .filter(peerId => this._nativeScreenPeerVersions.get(peerId) !== null);
+      const peerResults = await Promise.all(nativePeerIds.map(peerId =>
+        this._runNativeOperation(
+          () => api.addPeer({ peerId, sessionId: result.sessionId }),
+          this._nativeScreenPeerAttachTimeoutMs || 8000
+        )
+      ));
+      if (peerResults.some(attached => !attached)) {
+        throw new Error('One or more native viewers could not be attached');
       }
       if (!this._isScreenStartValid(operation, channelCode, voiceGeneration)) {
-        await api.stop({ sessionId: result.sessionId }).catch(() => {});
-        this.socket.emit('screen-share-stopped', {
-          code: channelCode,
-          sessionId: result.sessionId,
-        });
+        await Promise.all([
+          this._runNativeOperation(() => api.stop({ sessionId: result.sessionId })),
+          this._announceScreenStopped([channelCode, this.currentChannel], result.sessionId),
+        ]);
         if (this._nativeScreenSessionId === result.sessionId) {
           this._nativeScreenSharing = false;
           this._nativeScreenSessionId = null;
           this._nativeScreenSenderStates.clear();
+          this._screenShareChannelCode = null;
           this.isScreenSharing = false;
           this.screenHasAudio = false;
         }
@@ -1343,18 +1473,31 @@ class VoiceManager {
       }
       return true;
     } catch (err) {
-      await api.stop(startedSessionId ? { sessionId: startedSessionId } : undefined).catch(() => {});
-      if (announced && this.currentChannel) {
-        this.socket.emit('screen-share-stopped', {
-          code: this.currentChannel,
-          sessionId: startedSessionId,
-        });
+      const ownsCurrentOperation = startedSessionId
+        ? this._nativeScreenSessionId === startedSessionId
+        : this._screenStartOperation === operation;
+      const helperStop = (startedSessionId || ownsCurrentOperation)
+        ? this._runNativeOperation(() =>
+            api.stop(startedSessionId ? { sessionId: startedSessionId } : undefined)
+          )
+        : Promise.resolve(false);
+      await (announced
+        ? Promise.all([
+            helperStop,
+            this._announceScreenStopped([channelCode, this.currentChannel], startedSessionId),
+          ])
+        : helperStop);
+      const stillOwnsCurrentOperation = startedSessionId
+        ? this._nativeScreenSessionId === startedSessionId
+        : this._screenStartOperation === operation;
+      if (stillOwnsCurrentOperation) {
+        this._nativeScreenSharing = false;
+        this._nativeScreenSessionId = null;
+        this._screenShareChannelCode = null;
+        this.isScreenSharing = false;
+        this.screenStream = null;
+        this.screenHasAudio = false;
       }
-      this._nativeScreenSharing = false;
-      this._nativeScreenSessionId = null;
-      this.isScreenSharing = false;
-      this.screenStream = null;
-      this.screenHasAudio = false;
       console.error('[NativeScreen] Native share initialization failed:', err);
       return announced ? false : null;
     }
@@ -1774,6 +1917,8 @@ class VoiceManager {
     this.isDeafened = false;
     this.audioBitrate = 0;
     this.screenSharers.clear();
+    this._nativeScreenPeerVersions.clear();
+    this._screenShareChannelCode = null;
     this._screenDelivered.clear();
     this._closeAllNativeScreenPeers();
     this.screenGainNodes.clear();
@@ -1868,6 +2013,8 @@ class VoiceManager {
     this.isMuted = false;
     this.isDeafened = false;
     this.screenSharers.clear();
+    this._nativeScreenPeerVersions.clear();
+    this._screenShareChannelCode = null;
     this._screenDelivered.clear();
     this._closeAllNativeScreenPeers();
     this.screenGainNodes.clear();
@@ -1969,6 +2116,7 @@ class VoiceManager {
     const voiceGeneration = this._voiceSessionGeneration || 0;
     this._screenStartOperation = operation;
     this._screenStartInFlight = true;
+    let capturedStream = null;
     try {
       const nativeResult = await this._tryStartNativeScreenShare(
         operation, channelCode, voiceGeneration
@@ -2024,7 +2172,7 @@ class VoiceManager {
         }
       }
 
-      const capturedStream = await navigator.mediaDevices.getDisplayMedia(displayMediaOptions);
+      capturedStream = await navigator.mediaDevices.getDisplayMedia(displayMediaOptions);
 
       if (!this._isScreenStartValid(operation, channelCode, voiceGeneration)) {
         capturedStream.getTracks().forEach(track => track.stop());
@@ -2033,6 +2181,7 @@ class VoiceManager {
       this.screenStream = capturedStream;
 
       this.isScreenSharing = true;
+      this._screenShareChannelCode = channelCode;
 
       // 3.18.1 (#5379) — hint the encoder that this is motion content (games,
       // videos, scrolling). Without this hint, browsers may bias toward
@@ -2062,7 +2211,14 @@ class VoiceManager {
       // the same user (image: tile shown, audio works, video black).
       const hasAudio = this.screenStream.getAudioTracks().length > 0;
       this.screenHasAudio = hasAudio;
-      this.socket.emit('screen-share-started', { code: channelCode, hasAudio });
+      const confirmation = await this._emitScreenLifecycle('screen-share-started', {
+        code: channelCode,
+        hasAudio,
+        transport: 'browser',
+      });
+      if (!confirmation.ok) {
+        throw new Error(`Server rejected screen share: ${confirmation.error || 'unknown error'}`);
+      }
 
       // Add screen tracks to all existing peer connections and cap bitrate
       const maxBitrate = this._screenBitrates[res] || this._screenBitrates[0];
@@ -2074,15 +2230,28 @@ class VoiceManager {
         this._applyScreenBitrate(peer.connection, maxBitrate);
         // Renegotiate with each peer
         await this._renegotiate(userId, peer.connection);
-        if (!this._isScreenStartValid(operation, channelCode, voiceGeneration)) return false;
+        if (!this._isScreenStartValid(operation, channelCode, voiceGeneration)) {
+          await this.stopScreenShare();
+          return false;
+        }
       }
 
-      return this._isScreenStartValid(operation, channelCode, voiceGeneration);
+      if (!this._isScreenStartValid(operation, channelCode, voiceGeneration)) {
+        await this.stopScreenShare();
+        return false;
+      }
+      return true;
     } catch (err) {
       console.error('Screen share failed:', err);
+      if (capturedStream && this.screenStream === capturedStream && this.isScreenSharing) {
+        await this.stopScreenShare().catch(() => {});
+      } else if (capturedStream) {
+        capturedStream.getTracks().forEach(track => track.stop());
+      }
       if (this._screenStartOperation === operation) {
         this.isScreenSharing = false;
         this.screenStream = null;
+        this._screenShareChannelCode = null;
       }
       return false;
     } finally {
@@ -2092,24 +2261,29 @@ class VoiceManager {
 
   async stopScreenShare() {
     if (!this.isScreenSharing) return;
+    const shareChannelCode = this._screenShareChannelCode;
+    const currentChannelCode = this.currentChannel;
     this._screenStartOperation = (this._screenStartOperation || 0) + 1;
     this._screenStartInFlight = false;
 
     if (this._nativeScreenSharing) {
-      const channelCode = this.currentChannel;
       const sessionId = this._nativeScreenSessionId;
       this._nativeScreenSharing = false;
       this._nativeScreenSessionId = null;
+      this._screenShareChannelCode = null;
       this._nativeScreenSenderStates.clear();
       this.isScreenSharing = false;
       this.screenStream = null;
       this.screenHasAudio = false;
       this.screenSharers.delete(this.localUserId);
       this._nativeScreenAnnouncements.delete(this.localUserId);
-      await window.havenDesktop?.nativeScreen?.stop?.({ sessionId }).catch(err => {
-        console.warn('[NativeScreen] Failed to stop native pipeline:', err);
-      });
-      if (channelCode) this.socket.emit('screen-share-stopped', { code: channelCode, sessionId });
+      const [helperStopped] = await Promise.all([
+        this._runNativeOperation(
+          () => window.havenDesktop?.nativeScreen?.stop?.({ sessionId })
+        ),
+        this._announceScreenStopped([shareChannelCode, currentChannelCode], sessionId),
+      ]);
+      if (!helperStopped) console.warn('[NativeScreen] Native pipeline stop timed out');
       if (this.onScreenStream) this.onScreenStream(this.localUserId, null);
       return;
     }
@@ -2143,23 +2317,33 @@ class VoiceManager {
     // On the next startScreenShare the new addTrack would reuse that broken
     // transceiver and ontrack would never fire on the viewer side — exactly
     // the symptom users reported. Use allSettled with a generous safety cap.
+    let renegotiationTimer;
     try {
       await Promise.race([
         Promise.allSettled(renegotiations),
-        new Promise(resolve => setTimeout(resolve, 8000))
+        new Promise(resolve => {
+          renegotiationTimer = setTimeout(resolve, 8000);
+        })
       ]);
-    } catch { /* proceed anyway */ }
+    } catch { /* proceed anyway */ } finally {
+      if (renegotiationTimer) clearTimeout(renegotiationTimer);
+    }
 
     // Now safe to stop tracks — all peers have detached them
     tracks.forEach(t => t.stop());
 
     this.screenStream = null;
     this.isScreenSharing = false;
+    this._screenShareChannelCode = null;
     this._captureController = null;
     this.screenSharers.delete(this.localUserId);
     this._nativeScreenAnnouncements.delete(this.localUserId);
 
-    this.socket.emit('screen-share-stopped', { code: this.currentChannel });
+    await this._announceScreenStopped(
+      [shareChannelCode, currentChannelCode],
+      null,
+      () => !this.isScreenSharing
+    );
     // Notify local UI — pass localUserId so tile is found by its real ID
     if (this.onScreenStream) this.onScreenStream(this.localUserId, null);
   }

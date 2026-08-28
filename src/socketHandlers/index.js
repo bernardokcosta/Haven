@@ -1879,8 +1879,10 @@ function setupSocketHandlers(io, db, opts = {}) {
     socket.use((packet, next) => {
       const eventName = packet[0];
       if (PRESENCE_ACTIVE_EVENTS.has(eventName)) touchPresenceActivity(socket.user.id);
-      if (eventName === 'screen-share-started' || eventName === 'screen-share-stopped' ||
-          eventName === 'request-screen-renegotiate') {
+      // Stops are idempotent and must always reach the lifecycle handler;
+      // dropping one leaves a stale active-screen session server-side.
+      if (eventName === 'screen-share-stopped') return next();
+      if (eventName === 'screen-share-started' || eventName === 'request-screen-renegotiate') {
         if (floodCheck('screenLifecycle')) return;
         return next();
       }

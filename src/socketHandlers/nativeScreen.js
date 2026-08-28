@@ -4,6 +4,7 @@ const { isString, isInt } = require('./helpers');
 
 const MAX_SDP_SIZE = 16384;
 const MAX_ICE_SIZE = 2048;
+const NATIVE_SCREEN_VERSION = 1;
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
 const NEGOTIATION_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
 const MAX_OFFERS_PER_TARGET_WINDOW = 8;
@@ -38,6 +39,8 @@ function registerNativeScreenSignaling(socket, ctx) {
       const sender = room?.get(socket.user.id);
       const target = room?.get(data.targetUserId);
       if (!sender || sender.socketId !== socket.id || !target || target.id === socket.user.id) return;
+      if ((sender.nativeScreenVersion || 0) < NATIVE_SCREEN_VERSION ||
+          (target.nativeScreenVersion || 0) < NATIVE_SCREEN_VERSION) return;
 
       const sharers = activeScreenSharers.get(data.code);
       const senderIsSharer = sharers?.has(socket.user.id) === true;
@@ -80,6 +83,7 @@ module.exports = {
   MAX_SDP_SIZE,
   MAX_ICE_SIZE,
   MAX_OFFERS_PER_TARGET_WINDOW,
+  NATIVE_SCREEN_VERSION,
   SESSION_ID_PATTERN,
   NEGOTIATION_ID_PATTERN,
   registerNativeScreenSignaling,

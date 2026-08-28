@@ -267,7 +267,7 @@ class HavenApp {
     // exists, below, since it travels over the authenticated connection.
 
     this.socket = io({
-      auth: { token: this.token },
+      auth: { token: this.token, nativeScreenVersion: 1 },
       reconnectionDelay: 1500,
       reconnectionDelayMax: 10000,
       randomizationFactor: 0.4,
