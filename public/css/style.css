@@ -3956,7 +3956,7 @@ html.rgb-cycling *::after {
    handles closing. Desktop only — tablet/mobile use their own controls. */
 @media (min-width: 901px) {
   #members-toggle-btn { display: none; }
-  body:has(#right-sidebar.collapsed) #members-toggle-btn { display: flex; }
+  body.members-collapsed #members-toggle-btn { display: flex; }
 }
 
 /* ── Header actions box (code/settings | search/pin) ── */

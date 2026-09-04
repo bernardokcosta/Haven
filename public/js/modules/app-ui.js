@@ -1765,6 +1765,8 @@ _setupUI() {
 
   function applySidebarCollapsed(collapsed) {
     rightSidebar.classList.toggle('collapsed', collapsed);
+    // Body flag mirrors the state for CSS (no :has() — older Electron builds).
+    document.body.classList.toggle('members-collapsed', collapsed);
     membersToggleBtn?.classList.toggle('active', !collapsed);
     membersToggleBtn?.setAttribute('aria-pressed', String(!collapsed));
     window._updateSbToggleRight?.();
