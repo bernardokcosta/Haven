@@ -3950,6 +3950,10 @@ html.rgb-cycling *::after {
 
 .channel-info { display: flex; align-items: center; gap: 0.625rem; min-width: 0; }
 
+/* Members panel toggle — pinned to the far right of the channel header,
+   outside the per-channel actions box so it never hides. */
+.members-toggle-btn { margin-left: auto; flex-shrink: 0; }
+
 /* ── Header actions box (code/settings | search/pin) ── */
 .header-actions-box {
   display: flex;
