@@ -3950,9 +3950,14 @@ html.rgb-cycling *::after {
 
 .channel-info { display: flex; align-items: center; gap: 0.625rem; min-width: 0; }
 
-/* Members panel toggle — pinned to the far right of the channel header,
-   outside the per-channel actions box so it never hides. */
-.members-toggle-btn { margin-left: auto; flex-shrink: 0; }
+/* Members panel toggle — lives in the header's right-side voice-controls
+   box (past the flex spacer), so it always rides the far right edge.
+   Visible only while the members panel is collapsed; the panel's own X
+   handles closing. Desktop only — tablet/mobile use their own controls. */
+@media (min-width: 901px) {
+  #members-toggle-btn { display: none; }
+  body:has(#right-sidebar.collapsed) #members-toggle-btn { display: flex; }
+}
 
 /* ── Header actions box (code/settings | search/pin) ── */
 .header-actions-box {

@@ -349,16 +349,6 @@
               </div>
             </div>
           </div>
-          <!-- Members panel toggle — outside the channel actions box so it
-               stays visible (far right) even with no channel selected. -->
-          <button id="members-toggle-btn" class="icon-btn small members-toggle-btn" data-i18n-title="app.actions.toggle_members_panel" data-i18n-aria-label="app.actions.toggle_members_panel" title="Toggle members panel" aria-label="Toggle members panel" aria-pressed="true">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
-              <circle cx="9" cy="7" r="4"/>
-              <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
-              <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-            </svg>
-          </button>
           <!-- Update available banner -->
           <a id="update-banner" class="update-banner" href="#" style="display:none" target="_blank" rel="noopener">
             <span class="update-pulse"></span>
@@ -393,8 +383,18 @@
           </div>
           <!-- Spacer pushes voice controls to the right -->
           <div style="flex:1"></div>
-          <!-- Right-side: dynamic indicators, then voice (always furthest right) -->
+          <!-- Right-side: dynamic indicators, then voice (always furthest right).
+               The members toggle lives here too, so the header spacer keeps
+               it pinned right; it only shows while the panel is collapsed. -->
           <div class="voice-controls">
+            <button id="members-toggle-btn" class="icon-btn small members-toggle-btn" data-i18n-title="app.actions.toggle_members_panel" data-i18n-aria-label="app.actions.toggle_members_panel" title="Toggle members panel" aria-label="Toggle members panel" aria-pressed="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                <circle cx="9" cy="7" r="4"/>
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+              </svg>
+            </button>
             <button id="mobile-users-btn" class="mobile-users-btn" data-i18n-title="modals.all_members.title" data-i18n-aria-label="modals.all_members.title" title="Members" aria-label="Members">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
                 <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
