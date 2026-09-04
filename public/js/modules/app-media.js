@@ -1979,13 +1979,10 @@ _setupSoundManagement() {
     localStorage.removeItem('haven_sb_sidebar_hidden');
     // Define the helper now (app-ui and app-admin will also call it).
     // Layout is: ... | main | sb-panel | right-sidebar (voice/users)
-    // - Voice/users toggle btn sits at the LEFT edge of right-sidebar (right:width-of-voice when open, right:0 when collapsed).
     // - Soundboard toggle btn sits at the LEFT edge of sb-panel, which is also offset by voice width.
-    // Both buttons are staggered vertically in CSS so they never visually collide when both end up at right:0.
     window._updateSbToggleRight = () => {
       const sbPanel    = document.getElementById('sb-sidebar-panel');
       const rightSb    = document.getElementById('right-sidebar');
-      const voiceBtn   = document.getElementById('sidebar-toggle-btn');
       const sbBtn      = document.getElementById('sb-sidebar-toggle-btn');
       const sbOpen     = sbPanel && !sbPanel.classList.contains('sb-hidden');
       // Below 900px the voice/users panel stops being a column in the row and
@@ -2012,16 +2009,14 @@ _setupSoundManagement() {
           ? (useRendered ? (rightSb.offsetWidth || parseInt(rightSb.style.width) || 240)
                          : (parseInt(rightSb.style.width) || rightSb.offsetWidth || 240))
           : 0;
-        if (voiceBtn) voiceBtn.style.right = voiceWidth + 'px';
         if (sbBtn) {
           sbBtn.style.right = (voiceWidth + sbWidth) + 'px';
           // When the sb panel is OPEN, the toggle button sits at the panel's
-          // left edge — a horizontal position the voice/users toggle never
-          // occupies. Align it with the voice header (top: 72px) so it stops
+          // left edge. Align it with the voice header (top: 72px) so it stops
           // visually crowding the first content row, which under the prior
           // 114px stagger looked like an overlap with the top of the sound
-          // list. When the panel is CLOSED, both toggles can end up at
-          // right:0, so restore the 114px stagger to keep them from stacking.
+          // list. When the panel is CLOSED, the toggle sits alone at right:0,
+          // so restore the 114px stagger to keep it clear of the header row.
           sbBtn.style.top = sbOpen ? '72px' : '114px';
         }
       };

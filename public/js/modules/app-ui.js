@@ -1756,27 +1756,36 @@ _setupUI() {
     });
   });
 
-  // Right sidebar collapse toggle (persisted to localStorage)
-  const sidebarToggle = document.getElementById('sidebar-toggle-btn');
+  // Right sidebar collapse toggle (persisted to localStorage).
+  // Discord-style: an X in the panel's ONLINE title row closes it, and a
+  // people button in the channel header reopens it.
+  const membersToggleBtn = document.getElementById('members-toggle-btn');
+  const membersCloseBtn = document.getElementById('members-panel-close');
   const rightSidebar = document.getElementById('right-sidebar');
 
   function applySidebarCollapsed(collapsed) {
     rightSidebar.classList.toggle('collapsed', collapsed);
-    sidebarToggle.classList.toggle('is-collapsed', collapsed);
-    sidebarToggle.textContent = collapsed ? '\u276E' : '\u276F'; // ❮ or ❯
+    membersToggleBtn?.classList.toggle('active', !collapsed);
+    membersToggleBtn?.setAttribute('aria-pressed', String(!collapsed));
     window._updateSbToggleRight?.();
   }
   // Exposed so the search panel can temporarily un-collapse the sidebar it
   // overlays, then restore the user's preference on close. (search-overhaul)
   this._applySidebarCollapsed = applySidebarCollapsed;
 
+  function setSidebarCollapsed(collapsed) {
+    applySidebarCollapsed(collapsed);
+    localStorage.setItem('haven-sidebar-collapsed', collapsed ? '1' : '0');
+  }
+
   // Default is expanded; only collapse if explicitly saved as '1'
   applySidebarCollapsed(localStorage.getItem('haven-sidebar-collapsed') === '1');
 
-  sidebarToggle.addEventListener('click', () => {
-    const collapsed = !rightSidebar.classList.contains('collapsed');
-    applySidebarCollapsed(collapsed);
-    localStorage.setItem('haven-sidebar-collapsed', collapsed ? '1' : '0');
+  membersToggleBtn?.addEventListener('click', () => {
+    setSidebarCollapsed(!rightSidebar.classList.contains('collapsed'));
+  });
+  membersCloseBtn?.addEventListener('click', () => {
+    setSidebarCollapsed(true);
   });
 
   // E2E lock menu dropdown toggle

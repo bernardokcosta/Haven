@@ -5399,34 +5399,17 @@ details.sound-section:not([open]) .sound-section-label::before {
   pointer-events: none;
 }
 
-/* Sidebar collapse arrow — fixed to the right edge of the viewport.
-   Always accessible regardless of sidebar state or scroll position. */
-.sidebar-collapse-btn {
-  position: fixed;
-  right: 0;
-  top: 72px;          /* near top — where the voice panel header sits */
-  transform: none;
-  width: 1.25rem;
-  height: 2.25rem;
+/* Members panel title row — close button pinned to the right, same row
+   as the ONLINE title (Discord-style). */
+.members-panel-title {
   display: flex;
   align-items: center;
-  justify-content: center;
-  font-size: 0.6875rem;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-right: none;
-  border-radius: 0.375rem 0 0 0.375rem;
-  color: var(--text-muted);
-  cursor: pointer;
-  padding: 0;
-  z-index: 100;
-  /* `right` is set imperatively in JS when sidebars open/close — animate it
-     so the button slides with the panel rather than popping into place. */
-  transition: right 0.25s ease, color 0.15s, background 0.15s;
 }
-.sidebar-collapse-btn:hover {
-  color: var(--text-primary);
-  background: var(--bg-tertiary);
+.members-panel-close {
+  margin-left: auto;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0.125rem 0.375rem;
 }
 
 /* Users section — fills remaining space and scrolls */
@@ -12028,7 +12011,10 @@ html:not([data-toolbaricons="emoji"]):not([data-toolbaricons="color"]) .tb-icon-
     padding-bottom: max(env(safe-area-inset-bottom, 0px), 1rem);
   }
   #app-body.mobile-right-open .right-sidebar { transform: translateX(0); }
-  .sidebar-collapse-btn { display: none; }
+  /* Desktop members toggle/close live in the channel header and the panel
+     title; on tablet the overlay is driven by the Members button instead. */
+  #members-toggle-btn,
+  .members-panel-close { display: none; }
   .mobile-users-btn { display: flex; }
   .mobile-settings-btn { display: flex; }
   .sidebar-settings-panel { display: none !important; }

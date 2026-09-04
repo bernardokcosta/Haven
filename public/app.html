@@ -298,6 +298,14 @@
             <button id="pinned-toggle-btn" class="icon-btn small" data-i18n-title="header.pinned_messages" title="Pinned messages">📌</button>
             <button id="gallery-toggle-btn" class="icon-btn small" data-i18n-title="header.media_gallery" title="View files & media">🖼</button>
             <button id="threads-toggle-btn" class="icon-btn small" data-i18n-title="header.thread_list" title="View threads">🧵</button>
+            <button id="members-toggle-btn" class="icon-btn small" data-i18n-title="app.actions.toggle_members_panel" data-i18n-aria-label="app.actions.toggle_members_panel" title="Toggle members panel" aria-label="Toggle members panel" aria-pressed="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                <circle cx="9" cy="7" r="4"/>
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+              </svg>
+            </button>
             <button id="move-select-btn" class="icon-btn small" data-i18n-title="header.select_messages_to_move" title="Select messages to move" style="display:none">☰</button>
             <div class="e2e-menu-wrapper" style="display:none" id="e2e-menu-wrapper">
               <button id="e2e-menu-btn" class="icon-btn small" data-i18n-title="header.encryption_options" title="Encryption options">🔐</button>
@@ -584,9 +592,7 @@
       </main>
 
       <!-- ─── Soundboard Sidebar (twin to voice/users — sits directly LEFT of right-sidebar) ─── -->
-      <!-- Soundboard toggle arrow, fixed, sits at left edge of soundboard panel.
-           The note marks it apart from the members handle right above it, which
-           is otherwise the same little arrow in the same place. (#5534) -->
+      <!-- Soundboard toggle arrow, fixed, sits at left edge of soundboard panel. (#5534) -->
       <button id="sb-sidebar-toggle-btn" class="sb-sidebar-toggle-btn" style="display:none" data-i18n-title="media.toggle_soundboard" title="Toggle soundboard panel"><span class="sb-toggle-mark" aria-hidden="true">♪</span><span class="sb-toggle-arrow">&#x276E;</span></button>
       <aside id="sb-sidebar-panel" class="sb-sidebar-panel sb-hidden" data-haven-region="soundboard">
         <div id="sb-sidebar-resize-handle" class="sb-sidebar-resize-handle"></div>
@@ -596,9 +602,6 @@
           <div id="sb-sidebar-grid" class="soundboard-grid sidebar-mode"></div>
         </div>
       </aside>
-
-      <!-- Voice/users sidebar collapse arrow — fixed, sits at left edge of voice/users panel -->
-      <button id="sidebar-toggle-btn" class="sidebar-collapse-btn" data-i18n-title="app.actions.toggle_members_panel" data-i18n-aria-label="app.actions.toggle_members_panel" title="Toggle members panel" aria-label="Toggle members panel">&#x276F;</button>
 
       <!-- ─── Right Sidebar ───────────────────────────── -->
       <aside class="right-sidebar" id="right-sidebar" data-haven-region="context-sidebar">
@@ -647,7 +650,7 @@
         <!-- Scrollable users section -->
         <div class="right-sidebar-users" id="right-sidebar-users" data-haven-region="member-list">
           <div class="panel">
-            <h5 class="panel-title"><span class="title-emoji">👥 </span><span data-i18n="right_sidebar.online_title">Online</span></h5>
+            <h5 class="panel-title members-panel-title"><span class="title-emoji">👥 </span><span data-i18n="right_sidebar.online_title">Online</span><button id="members-panel-close" class="icon-btn small members-panel-close" data-i18n-title="modals.common.close" data-i18n-aria-label="right_sidebar.close_panel" title="Close" aria-label="Close panel">&times;</button></h5>
             <div class="user-search-wrap" id="user-search-wrap" style="display:none">
               <input type="search" id="user-search" class="user-search-input" autocomplete="off" spellcheck="false"
                      data-i18n-placeholder="right_sidebar.search_members" placeholder="Search members...">
